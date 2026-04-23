@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>HaxBall Pro: Console & Save Edition</title>
+    <style>
+        body { background: #050505; color: white; margin: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; font-family: 'Segoe UI', sans-serif; overflow: hidden; }
+        canvas { border: 4px solid #333; background: #0e150e; border-radius: 8px; box-shadow: 0 0 40px rgba(0,0,0,0.5); }
+        .ui { margin-bottom: 5px; font-size: 24px; font-weight: 900; }
+        #dev-panel { background: #1a1a1a; padding: 15px; border-radius: 8px; margin-top: 15px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; width: 980px; border: 1px solid #444; }
+        .control-group { display: flex; flex-direction: column; gap: 5px; }
+        label { font-size: 11px; color: #aaa; text-transform: uppercase; }
+        .val { color: #00ffcc; font-weight: bold; float: right; }
+        input[type="range"] { cursor: pointer; accent-color: #00ffcc; }
+    </style>
+</head>
+<body>
+
+    <div class="ui">SKOR: <span id="score">0 - 0</span></div>
+    <canvas id="game"></canvas>
+
+    <div id="dev-panel">
+        <div class="control-group">
+            <label>Hız <span class="val" id="v-speed">3.5</span></label>
+            <input type="range" id="p-speed" min="1" max="8" step="0.1" value="3.5">
+            <label>İvme <span class="val" id="v-acc">0.22</span></label>
+            <input type="range" id="p-acc" min="0.05" max="0.6" step="0.01" value="0.22">
+        </div>
+        <div class="control-group">
+            <label>Şut Gücü <span class="val" id="v-kick">14</span></label>
+            <input type="range" id="p-kick" min="5" max="25" step="1" value="14">
+            <label>Şut Menzili <span class="val" id="v-range">15</span></label>
+            <input type="range" id="p-range" min="5" max="40" step="1" value="15">
+        </div>
+        <div class="control-group">
+            <label>Top Sürtünme <span class="val" id="v-fric">0.99</span></label>
+            <input type="range" id="p-fric" min="0.95" max="0.999" step="0.001" value="0.99">
+            <label>Duvar Sekme <span class="val" id="v-bounce">0.75</span></label>
+            <input type="range" id="p-bounce" min="0.1" max="1.2" step="0.05" value="0.75">
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('game');
+        const ctx = canvas.getContext('2d');
+        canvas.width = 1000; canvas.height = 600;
+
+        let scores = { p1: 0, bot: 0 };
+        const keys = {};
+
+        // AYAR SİSTEMİ (LocalStorage)
+        const defaultCfg = { ballFric: 0.99, wallBounce: 0.75, kickRange: 15, kickPower: 14, pSpeed: 3.5, pAcc: 0.22 };
+        let cfg = { ...defaultCfg, ...JSON.parse(localStorage.getItem('haxball_settings') || '{}'), controlStrength: 0.12 };
+
+        const ball = { x: 500, y: 300, r: 12, dx: 0, dy: 0 };
+        const p1 = { x: 150, y: 300, r: 22, dx: 0, dy: 0, max: cfg.pSpeed, acc: cfg.pAcc, f: 0.86, color: '#ff3333' };
+        const bot = { x: 850, y: 300, r: 22, dx: 0, dy: 0, acc: 0.20, max: 3.3, f: 0.86, color: '#33bcff' };
+        const posts = [{x: 0, y: 200}, {x: 0, y: 400}, {x: 1000, y: 200}, {x: 1000, y: 400}];
+
+        // PANEL & KAYIT FONKSİYONLARI
+        function updateUI() {
+            document.querySelectorAll('input[type="range"]').forEach(input => {
+                const map = { 'p-speed':'pSpeed', 'p-acc':'pAcc', 'p-kick':'kickPower', 'p-range':'kickRange', 'p-fric':'ballFric', 'p-bounce':'wallBounce' };
+                input.value = cfg[map[input.id]];
+                document.getElementById('v-' + input.id.split('-')[1]).innerText = input.value;
+            });
+        }
+
+        document.querySelectorAll('input').forEach(input => {
+            input.oninput = (e) => {
+                const val = parseFloat(e.target.value);
+                const id = e.target.id;
+                if(id==='p-speed') p1.max = val;
+                if(id==='p-acc') p1.acc = val;
+                const map = { 'p-speed':'pSpeed', 'p-acc':'pAcc', 'p-kick':'kickPower', 'p-range':'kickRange', 'p-fric':'ballFric', 'p-bounce':'wallBounce' };
+                cfg[map[id]] = val;
+                document.getElementById('v-' + id.split('-')[1]).innerText = val;
+                localStorage.setItem('haxball_settings', JSON.stringify(cfg));
+            };
+        });
+
+        // KONSOL (GAMEPAD) KONTROLÜ
+        function handleGamepad() {
+            const gps = navigator.getGamepads();
+            if (!gps[0]) return;
+            const gp = gps[0];
+            if (Math.abs(gp.axes[0]) > 0.1) p1.dx += gp.axes[0] * p1.acc;
+            if (Math.abs(gp.axes[1]) > 0.1) p1.dy += gp.axes[1] * p1.acc;
+            keys['Numpad5'] = gp.buttons[2].pressed || gp.buttons[0].pressed;
+        }
+
+        window.onkeydown = e => keys[e.code] = true;
+        window.onkeyup = e => keys[e.code] = false;
+
+        function reset() {
+            ball.x = 500; ball.y = 300; ball.dx = 0; ball.dy = 0;
+            p1.x = 150; p1.y = 300; p1.dx = 0; p1.dy = 0;
+            bot.x = 850; bot.y = 300; bot.dx = 0; bot.dy = 0;
+        }
+
+        function update() {
+            handleGamepad();
+            if (keys['KeyW']) p1.dy -= p1.acc; if (keys['KeyS']) p1.dy += p1.acc;
+            if (keys['KeyA']) p1.dx -= p1.acc; if (keys['KeyD']) p1.dx += p1.acc;
+
+            // FİZİK & ÇARPIŞMA
+            [p1, bot, ball].forEach(o => {
+                o.x += o.dx; o.y += o.dy;
+                o.dx *= (o === ball ? cfg.ballFric : o.f); 
+                o.dy *= (o === ball ? cfg.ballFric : o.f);
+            });
+
+            // Duvarlar ve Kale
+            [p1, bot, ball].forEach(o => {
+                const isB = (o === ball);
+                if (isB && o.y > 205 && o.y < 395) {
+                    if (o.x < -o.r) { scores.bot++; reset(); }
+                    if (o.x > 1000 + o.r) { scores.p1++; reset(); }
+                    document.getElementById('score').innerText = `${scores.p1} - ${scores.bot}`;
+                } else {
+                    if (o.x < o.r) { o.x = o.r; o.dx = -o.dx * (isB ? cfg.wallBounce : 0.5); }
+                    if (o.x > 1000-o.r) { o.x = 1000-o.r; o.dx = -o.dx * (isB ? cfg.wallBounce : 0.5); }
+                    if (o.y < o.r) { o.y = o.r; o.dy = -o.dy * (isB ? cfg.wallBounce : 0.5); }
+                    if (o.y > 600-o.r) { o.y = 600-o.r; o.dy = -o.dy * (isB ? cfg.wallBounce : 0.5); }
+                }
+            });
+
+            // Top Etkileşimi
+            [p1, bot].forEach(p => {
+                let dist = Math.hypot(ball.x - p.x, ball.y - p.y);
+                let kick = (p===p1 && (keys['Numpad5'] || keys['Digit5'])) || (p===bot && bot.willKick);
+                if (dist < p.r + ball.r + 5) {
+                    let ang = Math.atan2(ball.y - p.y, ball.x - p.x);
+                    if (kick && dist < p.r + ball.r + cfg.kickRange) {
+                        ball.dx = Math.cos(ang) * cfg.kickPower; ball.dy = Math.sin(ang) * cfg.kickPower;
+                    } else {
+                        ball.dx += (p.dx - ball.dx) * 0.1; ball.dy += (p.dy - ball.dy) * 0.1;
+                        if (dist < p.r + ball.r) {
+                            ball.x = p.x + Math.cos(ang) * (p.r + ball.r + 1);
+                            ball.y = p.y + Math.sin(ang) * (p.r + ball.r + 1);
+                        }
+                    }
+                }
+            });
+
+            // Bot AI (Basit)
+            bot.willKick = Math.hypot(bot.x-ball.x, bot.y-ball.y) < 40;
+            if (bot.x < ball.x + 20) bot.dx += bot.acc; else bot.dx -= bot.acc;
+            if (bot.y < ball.y) bot.dy += bot.acc; else bot.dy -= bot.acc;
+
+            draw();
+            requestAnimationFrame(update);
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, 1000, 600);
+            ctx.strokeStyle = "rgba(255,255,255,0.1)";
+            ctx.strokeRect(0,0,1000,600);
+            ctx.beginPath(); ctx.moveTo(500,0); ctx.lineTo(500,600); ctx.stroke();
+            posts.forEach(p => { ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(p.x, p.y, 10, 0, Math.PI*2); ctx.fill(); });
+            
+            const rnder = (o, c, k) => {
+                ctx.save();
+                if(k) { ctx.shadowBlur=20; ctx.shadowColor="#fff"; ctx.strokeStyle="#fff"; ctx.beginPath(); ctx.arc(o.x,o.y,o.r+cfg.kickRange,0,Math.PI*2); ctx.stroke(); }
+                ctx.fillStyle = c; ctx.beginPath(); ctx.arc(o.x, o.y, o.r, 0, Math.PI*2); ctx.fill(); ctx.restore();
+            };
+            rnder(ball, "#fff", false);
+            rnder(p1, p1.color, (keys['Numpad5'] || keys['Digit5']));
+            rnder(bot, bot.color, false);
+        }
+
+        updateUI();
+        update();
+    </script>
+</body>
+</html>
